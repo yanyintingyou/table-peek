@@ -6,8 +6,6 @@
 
 它是一个只依赖 Python 标准库的脚本加一份 skill 说明：读一遍表格，产出几个小文件，告诉模型这张表是什么结构、一行代表什么、数据在哪、哪里不确定。需要真实数据时，可以按条件取回有限几行，而不是把整张表塞进上下文。
 
-仓库名沿用了旧名 `tabular-file-understanding-agent-skill`，skill 本体叫 `table-peek`。
-
 ## 为什么需要它
 
 把一张几 GB 的表直接丢给模型，结果通常是：超出上下文、被截断，或者模型盯着前几百行原始数据却看不出结构。真正的难点是第一步，这张表到底怎么组织。
@@ -40,8 +38,8 @@ agent 通常只读 `table_digest.md` 和 `ambiguities.md` 就够了，需要取�
 ## 快速开始
 
 ```bash
-git clone https://github.com/yanyintingyou/tabular-file-understanding-agent-skill.git
-cd tabular-file-understanding-agent-skill
+git clone https://github.com/yanyintingyou/table-peek.git
+cd table-peek
 
 python skills/data-science/table-peek/scripts/profile_tabular_file.py \
   -i your_file.csv \

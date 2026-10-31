@@ -7,6 +7,7 @@ All notable changes to this project are documented here.
 ### Changed
 
 - Renamed the skill from `tabular-file-understanding` to `table-peek`. The packaged copy now lives at `skills/data-science/table-peek/`, and the `name:` field, Cursor rule, CI paths, AGENTS/CLAUDE instructions, and OpenAI metadata all follow it. Installs created before 1.3.0 still work, but they sit under the old directory name; replace them when convenient.
+- Renamed the GitHub repository to `yanyintingyou/table-peek`. GitHub redirects the old `tabular-file-understanding-agent-skill` URL, so existing clones keep working; update the remote when you get a chance.
 - Rewrote `README.md` and `README.zh-CN.md`: what the tool does for an agent, how to run the three common modes, and what it will not do. Repeated full command paths collapsed into one clone-and-run block.
 
 ## 1.2.0 — 2026-10-31

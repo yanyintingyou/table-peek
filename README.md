@@ -6,8 +6,6 @@ table-peek lets an agent look at a huge table before it tries to analyze one.
 
 A Python script reads the file and writes a few small artifacts. They tell the model what the table is, what one row means, where the data sits, and which parts stay uncertain. When the agent needs actual values, it pulls a bounded slice instead of loading the file.
 
-The repository keeps its old name, `tabular-file-understanding-agent-skill`. The skill is `table-peek`.
-
 ## Why this exists
 
 Hand a multi-GB CSV to a model and one of three things happens. The file blows the context window. It gets truncated. Or the model reads a few hundred raw rows and misses the structure.
@@ -42,8 +40,8 @@ Most agents read `table_digest.md` and `ambiguities.md` and stop there. The loca
 ## Quick start
 
 ```bash
-git clone https://github.com/yanyintingyou/tabular-file-understanding-agent-skill.git
-cd tabular-file-understanding-agent-skill
+git clone https://github.com/yanyintingyou/table-peek.git
+cd table-peek
 
 python skills/data-science/table-peek/scripts/profile_tabular_file.py \
   -i your_file.csv \

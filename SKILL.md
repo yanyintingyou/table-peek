@@ -6,7 +6,7 @@ version: 1.3.0
 author: yanyintingyou
 license: MIT
 platforms: [linux, macos, windows]
-metadata: {"hermes":{"category":"data-science","tags":["csv","xlsx","pdf","spreadsheet","table","profiling","llm-context"],"related_skills":["table-peek"]},"openclaw":{"homepage":"https://github.com/yanyintingyou/tabular-file-understanding-agent-skill"},"compatibility":{"agents":["Hermes Agent","Claude Code","OpenAI Codex","OpenClaw","generic AgentSkills loaders"]}}
+metadata: {"hermes":{"category":"data-science","tags":["csv","xlsx","pdf","spreadsheet","table","profiling","llm-context"],"related_skills":["table-peek"]},"openclaw":{"homepage":"https://github.com/yanyintingyou/table-peek"},"compatibility":{"agents":["Hermes Agent","Claude Code","OpenAI Codex","OpenClaw","generic AgentSkills loaders"]}}
 ---
 
 # table-peek
