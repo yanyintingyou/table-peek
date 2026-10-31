@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 EMPTY_MARKERS = {"", "na", "n/a", "null", "none", "nan", ".", "-", "--"}
 DATE_PATTERNS = [
     re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$"),
@@ -77,6 +77,8 @@ def strip_column_value_samples(profiles: List[Dict[str, Any]]) -> None:
             if isinstance(col, dict):
                 col["examples"] = []
                 col["top_values_sample"] = []
+                if isinstance(col.get("exact_stats"), dict):
+                    col["exact_stats"]["top_values"] = []
 
 
 def strip_locator_value_samples(locator: Dict[str, Any]) -> None:
@@ -149,30 +151,48 @@ def is_empty(v: Any) -> bool:
     return str(v).strip().lower() in EMPTY_MARKERS
 
 
-def try_float(v: str) -> Optional[float]:
-    s = str(v).strip()
-    if is_empty(s):
+NUMERIC_START_CHARS = frozenset("+-.0123456789")
+
+
+def _to_float_stripped(s: str) -> Optional[float]:
+    """Fast float parse for already-stripped, non-empty strings."""
+    if not s or s[0] not in NUMERIC_START_CHARS:
         return None
-    s = s.replace(",", "")
+    if "," in s:
+        s = s.replace(",", "")
     if s.endswith("%"):
         s = s[:-1].strip()
     try:
         x = float(s)
-        if math.isfinite(x):
-            return x
-    except Exception:
+    except ValueError:
         return None
-    return None
+    return x if math.isfinite(x) else None
+
+
+def try_float(v: str) -> Optional[float]:
+    s = str(v).strip()
+    if not s:
+        return None
+    if len(s) <= 5 and s.lower() in EMPTY_MARKERS:
+        return None
+    return _to_float_stripped(s)
+
+
+def _looks_date_stripped(s: str) -> bool:
+    """Date check for already-stripped strings; cheap digit gate before regexes."""
+    if not s or s[0] not in "0123456789":
+        return False
+    for pattern in DATE_PATTERNS:
+        if pattern.match(s):
+            return True
+    return False
 
 
 def looks_date(v: str) -> bool:
     s = str(v).strip()
-    if is_empty(s):
+    if not s:
         return False
-    if any(p.match(s) for p in DATE_PATTERNS):
-        return True
-    # Excel serial date: plausible but ambiguous; do not treat pure small integers as dates.
-    return False
+    return _looks_date_stripped(s)
 
 
 def semantic_guess(name: str, inferred_type: str) -> str:
@@ -268,6 +288,168 @@ def infer_column(values: List[str], name: str, total_rows: int, max_cell_chars: 
         "date_summary_sample": date_summary,
         "warnings": warnings,
     }
+
+
+class ColumnAccumulator:
+    """Streaming, memory-bounded exact statistics for a single column.
+
+    Used by --full-scan so that very large delimited files get exact counts,
+    missing rates and numeric ranges without holding rows in memory.
+    """
+
+    TOP_VALUE_CAP = 2000
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.rows = 0
+        self.missing = 0
+        self.non_empty = 0
+        self.numeric = 0
+        self.date = 0
+        self.int_like = True
+        self.bool_like_ok = True
+        self.total_len = 0
+        self.min_num: Optional[float] = None
+        self.max_num: Optional[float] = None
+        self.mean = 0.0
+        self.date_min: Optional[str] = None
+        self.date_max: Optional[str] = None
+        self.top: Counter = Counter()
+        self.top_truncated = False
+
+    def add(self, value: Any) -> None:
+        self.rows += 1
+        if value is None:
+            self.missing += 1
+            return
+        text = value.strip() if type(value) is str else str(value).strip()
+        if not text or (len(text) <= 5 and text.lower() in EMPTY_MARKERS):
+            self.missing += 1
+            return
+        self.non_empty += 1
+        self.total_len += len(text)
+        num = _to_float_stripped(text)
+        if num is not None:
+            self.numeric += 1
+            if self.int_like and abs(num - int(num)) >= 1e-9:
+                self.int_like = False
+            if self.min_num is None or num < self.min_num:
+                self.min_num = num
+            if self.max_num is None or num > self.max_num:
+                self.max_num = num
+            self.mean += (num - self.mean) / self.numeric
+        elif text[0].isdigit() and _looks_date_stripped(text):
+            self.date += 1
+            if self.date_min is None or text < self.date_min:
+                self.date_min = text
+            if self.date_max is None or text > self.date_max:
+                self.date_max = text
+        if self.bool_like_ok and len(text) <= 5 and text.lower() not in BOOL_LIKE_VALUES:
+            self.bool_like_ok = False
+        if not self.top_truncated:
+            if text in self.top:
+                self.top[text] += 1
+            elif len(self.top) < self.TOP_VALUE_CAP:
+                self.top[text] = 1
+            else:
+                self.top_truncated = True
+
+    def to_dict(self, max_cell_chars: int = 120, redact: bool = False) -> Dict[str, Any]:
+        non_empty = self.non_empty
+        numeric_ratio = self.numeric / non_empty if non_empty else 0.0
+        date_ratio = self.date / non_empty if non_empty else 0.0
+        avg_len = self.total_len / non_empty if non_empty else 0.0
+        distinct = len(self.top)
+        if not non_empty:
+            typ = "empty"
+        elif self.bool_like_ok:
+            typ = "boolean"
+        elif numeric_ratio >= 0.9:
+            typ = "integer" if self.int_like else "float"
+        elif date_ratio >= 0.75:
+            typ = "date"
+        elif not self.top_truncated and distinct <= max(20, int(0.05 * non_empty)):
+            typ = "category"
+        elif avg_len > 40:
+            typ = "text"
+        else:
+            typ = "mixed"
+
+        numeric_summary = {"min": None, "max": None, "mean": None}
+        if self.numeric:
+            numeric_summary = {
+                "min": self.min_num,
+                "max": self.max_num,
+                "mean": round(self.mean, 6),
+            }
+        date_summary = {"min": self.date_min, "max": self.date_max}
+        return {
+            "scope": "all_rows",
+            "rows_counted": self.rows,
+            "non_empty_count": non_empty,
+            "missing_count": self.missing,
+            "missing_rate": round(self.missing / max(self.rows, 1), 6),
+            "inferred_type": typ,
+            "distinct_sample": None if self.top_truncated else distinct,
+            "distinct_truncated": self.top_truncated,
+            "numeric_summary": numeric_summary,
+            "date_summary": date_summary,
+            "top_values": [{"value": safe_cell(k, max_chars=max_cell_chars, redact=redact), "count": v} for k, v in self.top.most_common(5)],
+        }
+
+
+BOOL_LIKE_VALUES = {"true", "false", "yes", "no", "y", "n", "0", "1"}
+
+
+def parse_extract_filters(header: List[str], where_args: Optional[List[str]]) -> Tuple[List[Tuple[int, str, str]], List[str]]:
+    """Resolve --extract-where COL=VALUE filters against the resolved header."""
+    filters: List[Tuple[int, str, str]] = []
+    unresolved: List[str] = []
+    norm_map = {norm_name(h): h for h in header}
+    for item in where_args or []:
+        if "=" not in item:
+            unresolved.append(item)
+            continue
+        raw_col, raw_val = item.split("=", 1)
+        col = raw_col.strip()
+        val = raw_val.strip()
+        if col in header:
+            filters.append((header.index(col), val, col))
+        elif norm_name(col) in norm_map:
+            name = norm_map[norm_name(col)]
+            filters.append((header.index(name), val, name))
+        else:
+            unresolved.append(item)
+    return filters, unresolved
+
+
+def write_sample_extract(path: Path, encoding: str, dialect: csv.Dialect, header: List[str], has_header: bool, max_cols: int, filters: List[Tuple[int, str, str]], limit: int, max_cell_chars: int, redact: bool, out_path: Path) -> int:
+    """Stream the file once and write at most `limit` matching rows to a small CSV."""
+    written = 0
+    buffer: List[List[str]] = []
+    with path.open("r", encoding=encoding, errors="replace", newline="") as f:
+        reader = csv.reader(f, dialect)
+        for i, row in enumerate(reader):
+            if has_header and i == 0:
+                continue
+            if filters:
+                keep = True
+                for idx, val, _ in filters:
+                    cell = row[idx] if idx < len(row) else ""
+                    if cell.strip() != val:
+                        keep = False
+                        break
+                if not keep:
+                    continue
+            buffer.append([safe_cell(v, max_chars=max_cell_chars, redact=redact) for v in row[:max_cols]])
+            written += 1
+            if written >= limit:
+                break
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header[:max_cols])
+        writer.writerows(buffer)
+    return written
 
 
 def detect_file_type(path: Path) -> str:
@@ -470,7 +652,7 @@ def profile_csv(path: Path, args) -> Tuple[Dict[str, Any], Dict[str, Any], List[
     rows = []
     widths = Counter()
     scanned = 0
-    limit = None if args.full_scan else args.scan_limit_rows
+    first_pass_limit = args.sample_rows if args.full_scan else args.scan_limit_rows
     with path.open("r", encoding=encoding, errors="replace", newline="") as f:
         reader = csv.reader(f, dialect)
         for row in reader:
@@ -478,7 +660,7 @@ def profile_csv(path: Path, args) -> Tuple[Dict[str, Any], Dict[str, Any], List[
             widths[len(row)] += 1
             if len(rows) < args.sample_rows:
                 rows.append(row)
-            if limit and scanned >= limit:
+            if first_pass_limit and scanned >= first_pass_limit:
                 break
 
     if not rows:
@@ -520,14 +702,67 @@ def profile_csv(path: Path, args) -> Tuple[Dict[str, Any], Dict[str, Any], List[
         cp["index"] = i
         columns.append(cp)
 
+    exact_mode = bool(args.full_scan)
+    data_row_count = max(scanned - (1 if has_header else 0), 0)
+    if exact_mode and header:
+        accs = [ColumnAccumulator(h) for h in header]
+        scanned = 0
+        widths = Counter()
+        data_row_count = 0
+        overflow_rows = 0
+        with path.open("r", encoding=encoding, errors="replace", newline="") as f:
+            reader = csv.reader(f, dialect)
+            for row in reader:
+                scanned += 1
+                widths[len(row)] += 1
+                if has_header and scanned == 1:
+                    continue
+                data_row_count += 1
+                if len(row) > max_cols:
+                    overflow_rows += 1
+                for j, acc in enumerate(accs):
+                    acc.add(row[j] if j < len(row) else "")
+        for j, col in enumerate(columns):
+            if j < len(accs):
+                col["exact_stats"] = accs[j].to_dict(args.max_cell_chars, args.redact_samples)
+        warnings.append(f"Full scan counted {data_row_count} data rows and computed exact per-column statistics; examples and top_values_sample remain sample-bounded.")
+        if overflow_rows:
+            warnings.append(f"{overflow_rows} rows were wider than the resolved {max_cols}-column header; extra cells were ignored for exact statistics.")
+
+    extract_info = None
+    if args.extract_limit:
+        if args.no_samples:
+            warnings.append("--extract-limit was ignored because --no-samples disables row-level output.")
+        elif not header:
+            warnings.append("--extract-limit was ignored because no columns could be resolved.")
+        else:
+            filters, unresolved = parse_extract_filters(header, args.extract_where)
+            if unresolved:
+                warnings.append("--extract-limit was ignored because these filter columns were not found: " + ", ".join(unresolved))
+                ambiguities.append("Sample extraction did not run: unknown filter column(s). Check exact column names in table_profile.json.")
+            else:
+                written = write_sample_extract(
+                    path, encoding, dialect, header, has_header, max_cols, filters,
+                    args.extract_limit, args.max_cell_chars, args.redact_samples,
+                    args.out / "sample_extract.csv",
+                )
+                extract_info = {
+                    "file": "sample_extract.csv",
+                    "rows_written": written,
+                    "row_limit": args.extract_limit,
+                    "filters": [f"{col}={val}" for _, val, col in filters] or None,
+                    "scan": "first matching rows in file order",
+                    "note": "Bounded read-only extract for agent inspection; cells are truncated to --max-cell-chars.",
+                }
+
     if len(widths) > 1:
         warnings.append(f"Rows have inconsistent column counts in scanned rows: {dict(widths.most_common(5))}")
         ambiguities.append("The delimited file has inconsistent row widths; table boundaries or quoting may need confirmation.")
     if not args.full_scan and scanned >= args.scan_limit_rows:
         warnings.append(f"CSV profiling used a bounded scan of {scanned} rows; row count and statistics may be estimates.")
         ambiguities.append("CSV statistics are sample/bounded-scan based, not guaranteed complete. Use --full-scan for exact row count if needed.")
-    if args.full_scan and scanned > len(rows):
-        warnings.append(f"CSV row count and row-width checks scanned the full file ({scanned} rows), but column profiles are based on the first {len(data_rows)} data rows retained by --sample-rows.")
+    if exact_mode and scanned > len(rows):
+        warnings.append(f"Exact statistics cover all {scanned} scanned rows; only the first {len(data_rows)} data rows were retained for examples and row samples.")
 
     shape_type = guess_shape_type(columns)
     grain = guess_grain(columns)
@@ -537,9 +772,9 @@ def profile_csv(path: Path, args) -> Tuple[Dict[str, Any], Dict[str, Any], List[
         "kind": "csv_table",
         "name": path.name,
         "location": "file",
-        "rows_estimate": max(scanned - (1 if has_header else 0), 0),
+        "rows_estimate": data_row_count,
         "columns_estimate": max_cols,
-        "rows_exact": bool(args.full_scan or (limit and scanned < limit)),
+        "rows_exact": bool(exact_mode or (first_pass_limit and scanned < first_pass_limit)),
         "columns_exact": False,
         "confidence": "high" if hconf in {"high", "medium"} else "medium",
         "warnings": warnings[:],
@@ -550,16 +785,21 @@ def profile_csv(path: Path, args) -> Tuple[Dict[str, Any], Dict[str, Any], List[
             "header_detected": has_header,
             "header_confidence": hconf,
             "scanned_rows": scanned,
+            "stats_scope": "all_rows" if exact_mode else "sample",
             "row_widths_seen": dict(widths.most_common(10)),
         },
     }
+    if extract_info:
+        table["sample_extract"] = extract_info
     profile = {
         "table_id": table_id,
         "shape": {
             "rows_estimate": table["rows_estimate"],
+            "rows_exact": table["rows_exact"],
             "columns_estimate": max_cols,
             "scanned_rows": scanned,
-            "sampled": not bool(args.full_scan),
+            "sampled": not exact_mode,
+            "stats_scope": "all_rows" if exact_mode else "sample",
         },
         "structure_guess": {
             "shape_type": shape_type,
@@ -838,9 +1078,9 @@ def guess_shape_type(columns: List[Dict[str, Any]]) -> str:
     date_sem = sum(1 for c in columns if c.get("semantic_guess") == "time")
     measure_cols = sum(1 for c in columns if c.get("semantic_guess") in {"measure", "percentage", "currency"})
     cat_cols = sum(1 for c in columns if c.get("semantic_guess") in {"category", "identifier"})
-    if n > 30 and period_cols == 0 and measure_cols / max(n, 1) > 0.6:
+    if n >= 6 and period_cols == 0 and cat_cols <= 2 and measure_cols / max(n, 1) >= 0.6:
         return "wide_measure_columns"
-    if n >= 12 and period_cols >= max(3, n // 3):
+    if period_cols >= 3 and period_cols >= max(3, n // 3):
         return "wide_time_series_table"
     if len(detect_wide_time_value_columns(columns)) >= 3:
         return "wide_time_series_table"
@@ -1038,6 +1278,8 @@ def apply_output_policy(profiles: List[Dict[str, Any]], policy: Dict[str, Any], 
                         item["value"] = safe_cell(item["value"], max_chars=max_cell_chars_cap or 10_000, redact=redact)
                     new_top.append(item)
                 col["top_values_sample"] = new_top
+            if isinstance(col.get("exact_stats"), dict):
+                col["exact_stats"]["top_values"] = col["exact_stats"].get("top_values", [])[:max_top]
 
         if not keep_samples and "samples" in prof:
             prof["samples"] = {"head_rows": [], "representative_rows": []}
@@ -1529,6 +1771,25 @@ def build_digest(manifest: Dict[str, Any], profile_doc: Dict[str, Any], ambiguit
     for t in manifest.get("tables", []):
         lines.append(f"- `{t['table_id']}`: {t.get('name')} ({t.get('kind')}), rows≈{t.get('rows_estimate')}, cols≈{t.get('columns_estimate')}, confidence={t.get('confidence')}")
     lines.append("")
+    early_profiles = profile_doc.get("profiles", [])
+    exact_cols: List[Dict[str, Any]] = []
+    exact_rows = None
+    if early_profiles and isinstance(early_profiles[0], dict):
+        early_shape = early_profiles[0].get("shape") or {}
+        if early_shape.get("stats_scope") == "all_rows":
+            exact_rows = early_shape.get("rows_estimate")
+            exact_cols = [c for c in early_profiles[0].get("columns", []) if isinstance(c, dict) and c.get("exact_stats")]
+    if exact_rows is not None and exact_cols:
+        lines.append("## Exact Statistics (all rows)")
+        lines.append(f"- Data rows (exact): {exact_rows:,}")
+        lines.append(f"- Columns with exact stats: {len(exact_cols)}")
+        worst = [c for c in sorted(exact_cols, key=lambda c: -(c["exact_stats"].get("missing_rate") or 0)) if (c["exact_stats"].get("missing_rate") or 0) > 0][:6]
+        if worst:
+            lines.append("- Highest exact missing rates: " + "; ".join(f"`{c.get('name')}`={c['exact_stats']['missing_rate']:.4f}" for c in worst))
+        for c in [c for c in exact_cols if (c["exact_stats"].get("numeric_summary") or {}).get("min") is not None and c.get("semantic_guess") not in {"identifier", "time"}][:3]:
+            ns = c["exact_stats"]["numeric_summary"]
+            lines.append(f"- `{c.get('name')}` exact range: min={ns.get('min')}, max={ns.get('max')}, mean={ns.get('mean')}")
+        lines.append("")
     dp = manifest.get("domain_profile") or {}
     if dp:
         lines.append("## Data Locator Summary")
@@ -1574,6 +1835,17 @@ def build_digest(manifest: Dict[str, Any], profile_doc: Dict[str, Any], ambiguit
         if len(cols) > 40:
             lines.append(f"- ... {len(cols) - 40} additional columns omitted from digest; see table_profile.json.")
         lines.append("")
+    for t in manifest.get("tables", []):
+        ex = t.get("sample_extract")
+        if not ex:
+            continue
+        lines.append("## Bounded Extract")
+        lines.append(f"- File: `{ex.get('file')}` ({ex.get('rows_written')} rows written, limit {ex.get('row_limit')})")
+        if ex.get("filters"):
+            lines.append("- Filters: " + ", ".join(f"`{f}`" for f in ex["filters"]))
+        lines.append("- " + str(ex.get("note", "")))
+        lines.append("")
+        break
     lines.append("## Warnings")
     ws = manifest.get("warnings", [])[:20]
     if not ws:
@@ -1850,10 +2122,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--scan-limit-rows", type=int, default=100000, help="Maximum CSV rows to scan unless --full-scan is set")
     ap.add_argument("--sample-bytes", type=int, default=1024*1024, help="Bytes to read for encoding/dialect/PDF metadata sampling")
     ap.add_argument("--max-sheets", type=int, default=20, help="Maximum Excel sheets to sample")
-    ap.add_argument("--full-scan", action="store_true", help="For CSV/TSV, scan the full file for row count and row-width checks; column profiles remain sample-bounded")
+    ap.add_argument("--full-scan", action="store_true", help="For CSV/TSV, stream the whole file for an exact row count and exact per-column statistics (missing counts, numeric ranges, bounded distinct values). Costs one full read")
     ap.add_argument("--max-cell-chars", type=int, default=120, help="Maximum characters retained per sample/example cell")
     ap.add_argument("--redact-samples", action="store_true", help="Redact email-like, phone-like, and long-number values in examples and sample rows")
     ap.add_argument("--no-samples", action="store_true", help="Omit row samples and column-level examples/top-values from table_profile.json")
+    ap.add_argument("--extract-limit", type=int, default=0, help="Write up to N matching rows to sample_extract.csv for agent inspection (0 disables). CSV/TSV only")
+    ap.add_argument("--extract-where", action="append", default=[], metavar="COL=VALUE", help="Exact-match filter for --extract-limit; repeatable and combined with AND")
     ap.add_argument("--schema-preset", choices=["none", "generic", "rag", "sql"], default="none", help="Optionally write downstream_schema_hint.json for common downstream workflows")
     ap.add_argument("--domain-full-scan", action="store_true", help="For IMF/SDMX-style wide-time CSVs, stream the file to create domain_indicator_catalog.{json,csv,md} with indicator availability and coverage")
     ap.add_argument("--domain-scan-limit-rows", type=int, default=0, help="Optional row limit for --domain-full-scan; 0 means scan all rows")
@@ -1957,7 +2231,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "file_size_bytes": path.stat().st_size,
         "created_at_utc": utc_now(),
         "profiler": {"name": "profile_tabular_file.py", "version": VERSION, "python_version": sys.version.split()[0]},
-        "profiling_options": {"sample_rows": args.sample_rows, "scan_limit_rows": args.scan_limit_rows, "sample_bytes": args.sample_bytes, "max_cell_chars": args.max_cell_chars, "redact_samples": args.redact_samples, "no_samples": args.no_samples, "schema_preset": args.schema_preset, "output_policy": args.output_policy, "domain_preset": args.domain_preset, "indicator_mapping": str(args.indicator_mapping) if args.indicator_mapping else None, "entity_mapping": str(args.entity_mapping) if args.entity_mapping else None},
+        "profiling_options": {"sample_rows": args.sample_rows, "scan_limit_rows": args.scan_limit_rows, "sample_bytes": args.sample_bytes, "max_cell_chars": args.max_cell_chars, "redact_samples": args.redact_samples, "no_samples": args.no_samples, "extract_limit": args.extract_limit, "extract_where": list(args.extract_where or []), "schema_preset": args.schema_preset, "output_policy": args.output_policy, "domain_preset": args.domain_preset, "indicator_mapping": str(args.indicator_mapping) if args.indicator_mapping else None, "entity_mapping": str(args.entity_mapping) if args.entity_mapping else None},
         "mode": mode,
         "capability_level": capability,
         "output_control": output_policy,

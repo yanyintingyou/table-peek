@@ -11,7 +11,8 @@ This file defines the canonical artifacts produced by the skill. Agents may add 
 ├── table_digest.md
 ├── ambiguities.md
 ├── data_locator_spec.json
-└── data_locator_guide.md
+├── data_locator_guide.md
+└── sample_extract.csv          # optional, only with --extract-limit (CSV/TSV)
 ```
 
 ## `table_manifest.json`
@@ -28,7 +29,7 @@ Required top-level fields:
   "created_at_utc": "ISO-8601 string",
   "profiler": {
     "name": "profile_tabular_file.py",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "python_version": "string"
   },
   "mode": "sampled|full|limited",
@@ -68,9 +69,19 @@ Each table entry should include:
   "confidence": "high|medium|low",
   "warnings": [],
   "columns_omitted_by_output_policy": 0,
-  "omitted_column_names_preview": []
+  "omitted_column_names_preview": [],
+  "sample_extract": {
+    "file": "sample_extract.csv",
+    "rows_written": 0,
+    "row_limit": 0,
+    "filters": ["COLUMN=VALUE"],
+    "scan": "first matching rows in file order",
+    "note": "string"
+  }
 }
 ```
+
+`sample_extract` is present only when `--extract-limit` produced a file; it is omitted when extraction was disabled by `--no-samples` or skipped because a filter column was unknown.
 
 ## `table_profile.json`
 
@@ -91,9 +102,11 @@ Each profile should include:
   "table_id": "string",
   "shape": {
     "rows_estimate": 0,
+    "rows_exact": false,
     "columns_estimate": 0,
     "scanned_rows": 0,
-    "sampled": true
+    "sampled": true,
+    "stats_scope": "sample|all_rows"
   },
   "structure_guess": {
     "shape_type": "long_table|wide_table|matrix|report_layout|unknown",
@@ -135,6 +148,26 @@ Each column profile should include:
   "date_summary_sample": {
     "min": null,
     "max": null
+  },
+  "exact_stats": {
+    "scope": "all_rows",
+    "rows_counted": 0,
+    "non_empty_count": 0,
+    "missing_count": 0,
+    "missing_rate": 0.0,
+    "inferred_type": "string",
+    "distinct_sample": 0,
+    "distinct_truncated": false,
+    "numeric_summary": {
+      "min": null,
+      "max": null,
+      "mean": null
+    },
+    "date_summary": {
+      "min": null,
+      "max": null
+    },
+    "top_values": []
   },
   "warnings": []
 }

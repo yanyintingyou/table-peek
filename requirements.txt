@@ -1,3 +1,6 @@
+# Optional extras only. The bundled profiler runs on the Python standard
+# library alone; nothing here is imported by scripts/profile_tabular_file.py.
+# Install only when the user explicitly approves a deeper analysis path.
 pandas==2.3.3
 openpyxl==3.1.5
 duckdb==1.4.2

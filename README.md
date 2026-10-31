@@ -10,7 +10,7 @@
 ![Stdlib](https://img.shields.io/badge/Core-Python%20stdlib-lightgrey)
 
 > [!NOTE]
-> **GB-scale stress-tested:** the profiler has already passed real IMF BOP/PIP stress tests, including a 2GB IMF BOP file and a 17GB IMF PIP file, producing compact artifacts that let LLM agents understand the table structure without loading raw rows into context.
+> **GB-scale stress-tested (sampled mode):** the profiler has already passed real IMF BOP/PIP stress tests, including a 2GB IMF BOP file and a 17GB IMF PIP file, producing compact artifacts that let LLM agents understand the table structure without loading raw rows into context. Use `--full-scan` when exact statistics are required, but budget hours for multi-GB files.
 
 **Understand large and messy tabular files before asking an LLM to analyze them.**
 
@@ -224,7 +224,8 @@ Running the profiler creates these core artifacts:
 ├── table_digest.md
 ├── ambiguities.md
 ├── data_locator_spec.json
-└── data_locator_guide.md
+├── data_locator_guide.md
+└── sample_extract.csv          # optional, only with --extract-limit
 ```
 
 Optional outputs include:
@@ -244,6 +245,13 @@ domain_indicator_catalog.md
 - `ambiguities.md` — issues that need confirmation before serious analysis.
 - `data_locator_spec.json` — machine-readable locator for entities, indicators, time coverage, observation keys, values, units, statuses, and preprocessing needs.
 - `data_locator_guide.md` — compact human/LLM-readable guide for downstream automated extraction.
+- `sample_extract.csv` — optional bounded row extract (header plus up to `--extract-limit` matches); the row count and filters are recorded in `tables[].sample_extract` in the manifest.
+
+### Exact statistics and bounded reads (v1.2.0)
+
+`--full-scan` no longer just counts rows. It streams the file once and adds `columns[].exact_stats`: exact missing counts and rates, numeric min/max/mean, bounded distinct values, and a type inferred from every row. Memory stays flat; the cost is one full I/O pass.
+
+Measured locally (Windows, Python 3.13, single core): a 1,000,000-row × 7-column, 31 MB CSV took ~34 s with `--full-scan` plus an extract, at 5.2 MB peak Python memory; the sampled mode took 0.5 s at the same footprint. That is roughly 30k rows/second, so a multi-GB full scan is an hours-scale job — which is why sampling remains the default.
 
 ---
 
@@ -271,7 +279,7 @@ Then read:
 ./tabular-profile/data_locator_guide.md
 ```
 
-For a deeper but slower CSV scan:
+For a deeper but slower CSV scan (exact row count + exact column statistics):
 
 ```bash
 python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
@@ -279,6 +287,18 @@ python skills/data-science/tabular-file-understanding/scripts/profile_tabular_fi
   --out ./tabular-profile \
   --full-scan
 ```
+
+When the agent needs real values rather than statistics, take a bounded extract instead of dumping the table:
+
+```bash
+python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
+  --input your_file.csv \
+  --out ./tabular-profile \
+  --extract-limit 50 \
+  --extract-where COUNTRY.ID=US
+```
+
+`--extract-where` is repeatable, combined with AND, and matched exactly after trimming. Matches are written to `sample_extract.csv`, capped by `--extract-limit` and truncated per cell by `--max-cell-chars`.
 
 ---
 
@@ -544,7 +564,9 @@ skills/data-science/tabular-file-understanding/
 ## Known limitations
 
 - The bundled script is conservative and standard-library only.
-- CSV profiling is sample-bounded by default, though `--full-scan` improves row/width checks.
+- CSV profiling is sample-bounded by default; `--full-scan` adds exact row counts and exact per-column statistics at the cost of one full read (~30k rows/second).
+- `sample_extract.csv` returns the first N matches in file order — not a random sample and not a query engine. For filtered analysis across many keys, reshape the data and hand it to DuckDB/pandas.
+- Bounded extraction (`--extract-limit`) applies to CSV/TSV only; Excel extraction is not supported.
 - For large or very wide files, JSON artifacts may be intentionally reduced by the adaptive output policy.
 - Excel support reads `.xlsx` XML and does not execute formulas, macros, external links, or the Excel calculation engine.
 - PDF support is metadata-first unless enhanced by optional Python libraries.

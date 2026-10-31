@@ -1,7 +1,8 @@
 ---
 name: tabular-file-understanding
-description: Extracts structure, schemas, samples, and warnings from large CSV, Excel, and PDF table files using Python-only profiling. Use before asking an LLM to reason about tabular files.
-version: 1.0.0
+description: Extracts structure, schemas, samples, exact column statistics, and warnings from large CSV, Excel, and PDF table files using Python-only profiling, and can write a bounded row extract for agent inspection. Use before asking an LLM to reason about tabular files.
+when-to-use: large csv, huge spreadsheet, table structure, schema discovery, what is in this file, sample rows from big table, imf bop csv, xlsx profiling
+version: 1.2.0
 author: yanyintingyou
 license: MIT
 platforms: [linux, macos, windows]
@@ -27,6 +28,8 @@ This skill converts a potentially huge tabular file into a small set of artifact
 
 Never paste a large table directly into the model context. Use Python to inspect, sample, and summarize it. Return only the compact digest and ambiguity list to the user unless they explicitly ask for raw samples or full outputs.
 
+When the agent genuinely needs to see real values, use the bounded extract (`--extract-limit` with optional `--extract-where COL=VALUE`) instead of dumping a table or writing an ad-hoc pandas script. It streams the file once and writes at most N rows to `sample_extract.csv`.
+
 ## Tool Policy
 
 Use Python only. Do not require external command-line tools such as DuckDB CLI, LibreOffice, Java, Ghostscript, `xlsx2csv`, `tabula`, shell pipelines, or database servers. If the host agent exposes a shell-like tool, use it only to run Python, for example:
@@ -36,6 +39,11 @@ python skills/data-science/tabular-file-understanding/scripts/profile_tabular_fi
 ```
 
 The bundled reference script uses only the Python standard library. Agents may write additional Python code if needed, but should preserve the same output contract. For sensitive files, run with `--redact-samples` or `--no-samples`. If a downstream workflow needs a routing hint, add `--schema-preset generic`, `--schema-preset rag`, or `--schema-preset sql`. For macroeconomic or SDMX-style time-series files, use `--domain-preset auto|macro-timeseries|sdmx|imf-bop` and optional `--indicator-mapping` / `--entity-mapping` CSV codelists to generate a data locator.
+
+Two flags matter for very large delimited files:
+
+- `--full-scan` streams the whole file once to produce exact row counts and exact per-column statistics (missing counts, numeric min/max/mean, distinct values up to a bounded cap). Sampling stays the default because full scans cost I/O: roughly 30k rows/second on one Python core.
+- `--extract-limit N` (with repeatable `--extract-where COL=VALUE`) writes at most N matching rows to `sample_extract.csv`. This is the sanctioned way to let an agent look at real values from a huge file.
 
 ## When to Use
 
@@ -71,6 +79,17 @@ Do not use this skill for:
    python <skill_dir>/scripts/profile_tabular_file.py --input <file> --out <output_dir> --full-scan
    ```
 
+   A full scan reads the file once (no extra memory) and adds exact row counts plus exact per-column statistics under `columns[].exact_stats`. Sampled mode stays the default because it is size-independent.
+
+   If the agent needs to see actual values rather than statistics, add a bounded extract instead of dumping the table:
+
+   ```bash
+   python <skill_dir>/scripts/profile_tabular_file.py --input <file> --out <output_dir> \
+     --extract-limit 50 --extract-where COUNTRY.ID=US --extract-where FREQUENCY.ID=A
+   ```
+
+   This streams the file and writes at most N matching rows to `sample_extract.csv`. `--extract-where` is exact-match after trimming, repeatable, and combined with AND.
+
 4. **Let adaptive output control protect storage/context size.** By default, `--output-policy auto` keeps full JSON detail for small files, reduces examples for medium files, omits row samples for large files, and limits detailed column profiles for very large or extremely wide tables. Override with `--output-policy full|balanced|compact|very-compact` only when needed.
 5. **For sensitive files, protect samples.** Use `--redact-samples` for lightweight masking or `--no-samples` when row-level samples and column-level value examples/top-values should not be written.
 6. **Apply the profiler flexibly rather than mechanically.** Real-world tables are open-ended; the known patterns are heuristics, not a closed taxonomy. If the profiler's `shape_type`, `value_column`, `recommended_key`, or primary-table guess conflicts with sampled evidence, treat the profiler output as a hypothesis, inspect a small bounded slice, override the interpretation in your report, and improve the heuristic when the fix is durable.
@@ -78,6 +97,7 @@ Do not use this skill for:
    - `table_digest.md`
    - `ambiguities.md`
    - for macro/SDMX-like data, `data_locator_guide.md`
+   - `sample_extract.csv` when an extract was requested (bounded, already truncated)
    - optionally `table_manifest.json`, `data_locator_spec.json`, and selected parts of `table_profile.json`
 8. **For macro/SDMX-like files, inspect the locator.** Confirm inferred roles such as entity, indicator, counterpart, frequency, time, value, unit, and status before automated extraction.
 9. **Report capability and output policy.** State whether profiling was `basic`, `standard`, or `limited`, whether row counts/statistics are sampled or complete, and whether JSON output was `full`, `balanced`, `compact`, or `very-compact`.
@@ -108,7 +128,7 @@ File-level inventory and detected table candidates. Must include source path, fi
 
 ### `table_profile.json`
 
-Detailed but bounded table structure. Must include fields/columns, inferred data types, examples, missingness estimates, categorical top values, numeric ranges when available, and confidence notes.
+Detailed but bounded table structure. Must include fields/columns, inferred data types, examples, missingness estimates, categorical top values, numeric ranges when available, and confidence notes. When `--full-scan` was used, each column also carries `exact_stats` with `missing_count`, `missing_rate`, `inferred_type`, `numeric_summary`, bounded `distinct_sample`, and `top_values` computed over every row instead of the sample.
 
 ### `table_digest.md`
 
@@ -125,6 +145,10 @@ A concise Markdown summary meant to be loaded into LLM context. It should answer
 ### `ambiguities.md`
 
 A user-facing list of unresolved issues, such as multiple candidate tables, uncertain headers, mixed date formats, suspicious units, formula-heavy sheets, sampled-only statistics, or unsupported PDF extraction.
+
+### `sample_extract.csv`
+
+Optional. Written only when `--extract-limit` is set. Contains the resolved header plus at most `--extract-limit` rows that matched every `--extract-where` filter, in file order. Cells are truncated to `--max-cell-chars` and follow `--redact-samples`. The row count, limit, and filters are recorded in `table_manifest.json` under `tables[].sample_extract` and summarized in `table_digest.md`. Extraction is refused when `--no-samples` is set, and skipped when a filter column cannot be resolved.
 
 ### `data_locator_spec.json`
 
@@ -215,7 +239,7 @@ The bundled profiler detects this as `value_layout: wide_time_columns` and recor
 
 ### CSV / TSV / delimited text
 
-Use streaming Python processing. Detect dialect, delimiter, quote behavior, header confidence, row-width consistency, sample rows, inferred column types, empty-value patterns, top categories, date-like fields, and numeric ranges. Prefer sample-bounded scans by default. Use full scans only when the user requests exactness or the file is manageable.
+Use streaming Python processing. Detect dialect, delimiter, quote behavior, header confidence, row-width consistency, sample rows, inferred column types, empty-value patterns, top categories, date-like fields, and numeric ranges. Prefer sample-bounded scans by default. Use `--full-scan` when the user needs exact counts or statistics and can afford one full read; use `--extract-limit` when the agent needs a small, real slice of rows. Both flags apply to delimited text only.
 
 ### Excel `.xlsx`
 
@@ -247,7 +271,7 @@ See `references/dependency-policy.md`.
 - Avoid exposing sensitive row-level or column-level sample values unless the user asks for samples.
 - Make clear when statistics are sample-based rather than complete.
 - Make clear when adaptive output control reduced `table_profile.json`.
-- Use `--redact-samples` or `--no-samples` for sensitive files. `--no-samples` removes row samples and column-level `examples` / `top_values_sample`, and suppresses sample-derived locator indexes/frequency samples/key checks/value summaries, but it is still structural profiling, not a full DLP system.
+- Use `--redact-samples` or `--no-samples` for sensitive files. `--no-samples` removes row samples and column-level `examples` / `top_values_sample`, suppresses sample-derived locator indexes/frequency samples/key checks/value summaries, disables `--extract-limit`, and never writes `sample_extract.csv`, but it is still structural profiling, not a full DLP system.
 
 ## Interpretation Rules
 
@@ -266,7 +290,9 @@ Do not infer business meaning beyond what column names, sample values, and file 
 - The data locator is role inference, not authoritative metadata. For SDMX/IMF files, official DSD/codelist files remain the source of truth.
 - Locator indexes are sample-based unless the workflow is extended with a full domain scan; rare indicators/entities may be absent from the displayed top values.
 - Complex structures such as multi-header spreadsheets, cross-tab matrices, nested JSON/XML, hierarchical SDMX dimensions, pivoted time columns, ragged report layouts, multi-table PDFs, merged-cell workbooks, and formula-driven Excel models may require custom parsing beyond this skill.
-- CSV `--full-scan` gives a more complete row count and row-width check; column profiles remain bounded by sampled rows unless an agent writes an enhanced Python backend.
+- CSV `--full-scan` now yields exact row counts and exact per-column statistics, but examples, `top_values_sample` and row samples stay sample-bounded. Throughput is roughly 30k rows/second per core, so a multi-GB full scan takes hours; use it deliberately.
+- `sample_extract.csv` reads the first N matches in file order; it is not a random sample and not a query engine. For filtered analysis over many keys, load the reshaped data into DuckDB/pandas downstream.
+- Excel extraction is not supported: `--extract-limit` applies to CSV/TSV only.
 - `.xlsx` support is XML-based and does not calculate formulas, evaluate macros, parse old `.xls`, resolve Excel style-based date serials, or fully reconstruct complex Excel UI state.
 - PDF support is metadata-first unless the user provides extracted tables or approves optional Python PDF libraries.
 - Pattern-based sample redaction is not a complete DLP system. For highly sensitive files, use `--no-samples`.

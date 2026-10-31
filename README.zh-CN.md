@@ -10,7 +10,7 @@
 ![Stdlib](https://img.shields.io/badge/Core-Python%20stdlib-lightgrey)
 
 > [!NOTE]
-> **已通过 GB 级压力测试：** profiler 已经通过真实 IMF BOP/PIP 文件测试，包括 2GB IMF BOP 文件和 17GB IMF PIP 文件；它会生成紧凑产物，让 LLM agent 在不加载原始行数据的情况下理解表格结构。
+> **已通过 GB 级压力测试（采样模式）：** profiler 已经通过真实 IMF BOP/PIP 文件测试，包括 2GB IMF BOP 文件和 17GB IMF PIP 文件；它会生成紧凑产物，让 LLM agent 在不加载原始行数据的情况下理解表格结构。需要精确统计时用 `--full-scan`，但几 GB 文件要按小时计。
 
 **在让 LLM 分析表格之前，先理解大型、混乱、复杂表格文件的结构。**
 
@@ -224,7 +224,8 @@ PDF 默认只做元数据优先检查。核心脚本只能统计粗粒度文件/
 ├── table_digest.md
 ├── ambiguities.md
 ├── data_locator_spec.json
-└── data_locator_guide.md
+├── data_locator_guide.md
+└── sample_extract.csv          # 可选：仅当传入 --extract-limit
 ```
 
 可选产物包括：
@@ -244,6 +245,13 @@ domain_indicator_catalog.md
 - `ambiguities.md`：严肃分析前需要用户确认的问题。
 - `data_locator_spec.json`：机器可读的数据定位说明，包括实体、指标、时间覆盖、观测键、数值列、单位、状态列和预处理需求。
 - `data_locator_guide.md`：适合人和 LLM 阅读的数据定位指南，便于后续自动化提取。
+- `sample_extract.csv`（可选）：有界行抽取，带表头，最多 `--extract-limit` 行；行数、过滤条件记录在 `table_manifest.json` 的 `tables[].sample_extract` 中。
+
+### 精确统计与有界读取（v1.2.0）
+
+`--full-scan` 现在不只数行数，而是流式过一遍文件，给每列补 `exact_stats`：精确缺失计数与缺失率、数值 min/max/mean、有上限的去重值，以及基于全量数据的类型判断。内存恒定，代价是一次完整 I/O。
+
+本机实测（Windows，Python 3.13，单核）：100 万行 × 7 列、31 MB 的 CSV，`--full-scan --extract-limit` 约 34 秒，Python 峰值内存 5.2 MB；采样模式 0.5 秒，内存同为 5.2 MB。按此推算约 3 万行/秒，几 GB 文件的全量扫描需要按小时计，所以默认仍是采样。
 
 ---
 
@@ -271,7 +279,7 @@ python skills/data-science/tabular-file-understanding/scripts/profile_tabular_fi
 ./tabular-profile/data_locator_guide.md
 ```
 
-如果想对 CSV 做更完整但更慢的扫描：
+如果想对 CSV 做更完整但更慢的扫描（精确行数 + 精确列统计）：
 
 ```bash
 python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
@@ -279,6 +287,18 @@ python skills/data-science/tabular-file-understanding/scripts/profile_tabular_fi
   --out ./tabular-profile \
   --full-scan
 ```
+
+如果 agent 需要看真实数据而不是统计量，用有界抽取，不要 dump 整表：
+
+```bash
+python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
+  --input your_file.csv \
+  --out ./tabular-profile \
+  --extract-limit 50 \
+  --extract-where COUNTRY.ID=US
+```
+
+`--extract-where` 支持重复传入，多个条件按 AND 组合，匹配是去空格后的精确相等。结果写到 `sample_extract.csv`，行数受 `--extract-limit` 约束，单元格按 `--max-cell-chars` 截断。
 
 ---
 
@@ -541,10 +561,21 @@ skills/data-science/tabular-file-understanding/
 
 ---
 
+## 1.2.0 更新要点
+
+- `--full-scan` 从"只数行"升级为流式精确列统计（`columns[].exact_stats`）：精确缺失计数/缺失率、数值 min/max/mean、有上限去重值，内存恒定。
+- 新增有界读取：`--extract-limit N` + 可重复的 `--extract-where COL=VALUE`，输出 `sample_extract.csv`；`--no-samples` 下拒绝抽取，未知过滤列时跳过并告警，不产误导结果。
+- 性能：去掉逐格 `float()` 异常与日期正则的无效调用，100 万行 × 7 列全量扫描从 82 秒降到 34 秒。
+- 宽表判定修正：`wide_measure_columns` 从"必须 >30 列"改为按 measure 占比判定（≥6 列、占比 ≥60%、无期间列）；`wide_time_series_table` 去掉 `n>=12` 限制，`FY89` 这类财年列能正确算作期间列。EPU 与 World Bank 的小示例现在判得对。
+- `--redact-samples` / `--no-samples` 覆盖新增的 `exact_stats.top_values`。
+- 版本号统一：`SKILL.md` 与脚本 `VERSION` 均为 1.2.0，回归测试从 9 个增加到 13 个。
+
 ## 已知限制
 
 - 内置脚本是保守的标准库实现。
-- CSV 默认是样本边界内 profiling，不过 `--full-scan` 可改善行数和行宽检查。
+- CSV 默认是样本边界内 profiling；`--full-scan` 才会给出精确行数和精确列统计，代价是一次完整读取（约 3 万行/秒）。
+- `sample_extract.csv` 取的是文件顺序上的前 N 条命中，不是随机抽样，也不是查询引擎；需要按多键过滤分析时应把数据 reshape 后交给 DuckDB/pandas。
+- Excel 不支持 `--extract-limit`，有界抽取仅限 CSV/TSV。
 - 对大文件或极宽表，JSON 结果可能会被自适应输出策略主动压缩。
 - Excel 支持基于 `.xlsx` XML，不执行公式、宏、外部链接或 Excel 计算引擎。
 - PDF 默认以元数据为主，除非通过可选 Python 库增强。

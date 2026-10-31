@@ -215,6 +215,85 @@ def test_compact_policy_preserves_semantic_columns_at_tail() -> None:
             cleanup(out)
 
 
+def test_full_scan_reports_exact_column_stats() -> None:
+    with tempfile.TemporaryDirectory(prefix="tfu-fullscan-") as td:
+        source = Path(td) / "flows.csv"
+        lines = ["country,year,amount"]
+        for i in range(3000):
+            amount = "" if i % 10 == 0 else str(i)
+            lines.append(f"C{i % 7},{2000 + (i % 20)},{amount}")
+        source.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        manifest, profile, locator, out = run_profiler_on_path(
+            source, "--full-scan", "--sample-rows", "20"
+        )
+        try:
+            prof = first_profile(profile)
+            assert prof["shape"]["stats_scope"] == "all_rows"
+            assert prof["shape"]["rows_exact"] is True
+            assert prof["shape"]["rows_estimate"] == 3000
+            cols = {c["name"]: c for c in prof["columns"]}
+            exact = cols["amount"]["exact_stats"]
+            assert exact["rows_counted"] == 3000
+            assert exact["missing_count"] == 300
+            assert abs(exact["missing_rate"] - 0.1) < 1e-6
+            assert exact["numeric_summary"]["min"] == 1.0
+            assert exact["numeric_summary"]["max"] == 2999.0
+            assert cols["country"]["exact_stats"]["distinct_sample"] == 7
+            assert manifest["mode"] == "full"
+        finally:
+            cleanup(out)
+
+
+def test_extract_writes_bounded_matching_rows() -> None:
+    with tempfile.TemporaryDirectory(prefix="tfu-extract-") as td:
+        source = Path(td) / "panel.csv"
+        lines = ["COUNTRY.ID,YEAR,VALUE"]
+        for i in range(50):
+            lines.append(f"{'CN' if i % 5 == 0 else 'US'},{2000 + i},{i}")
+        source.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        manifest, profile, locator, out = run_profiler_on_path(
+            source, "--extract-limit", "3", "--extract-where", "COUNTRY.ID=CN"
+        )
+        try:
+            extract = out / "sample_extract.csv"
+            assert extract.exists()
+            rows = extract.read_text(encoding="utf-8").strip().splitlines()
+            assert rows[0] == "COUNTRY.ID,YEAR,VALUE"
+            assert len(rows) == 4
+            assert all(r.startswith("CN,") for r in rows[1:])
+            info = manifest["tables"][0]["sample_extract"]
+            assert info["rows_written"] == 3
+            assert info["filters"] == ["COUNTRY.ID=CN"]
+            digest = (out / "table_digest.md").read_text(encoding="utf-8")
+            assert "## Bounded Extract" in digest
+        finally:
+            cleanup(out)
+
+
+def test_extract_with_unknown_column_is_skipped() -> None:
+    with tempfile.TemporaryDirectory(prefix="tfu-extract-miss-") as td:
+        source = Path(td) / "panel.csv"
+        source.write_text("country,value\nUS,1\nCN,2\n", encoding="utf-8")
+        manifest, profile, locator, out = run_profiler_on_path(
+            source, "--extract-limit", "5", "--extract-where", "nope=1"
+        )
+        try:
+            assert not (out / "sample_extract.csv").exists()
+            assert "sample_extract" not in manifest["tables"][0]
+            assert any("filter columns were not found" in w for w in manifest["warnings"])
+        finally:
+            cleanup(out)
+
+
+def test_epu_fixture_detected_as_wide_measure_columns() -> None:
+    manifest, profile, locator, out = run_profiler("wide_measure_epu_mock.xlsx")
+    try:
+        assert locator["value_layout"] == "wide_measure_columns"
+        assert first_profile(profile)["structure_guess"]["shape_type"] == "wide_measure_columns"
+    finally:
+        cleanup(out)
+
+
 def main() -> int:
     tests = [
         test_fred_simple_long_time_series,
@@ -226,6 +305,10 @@ def main() -> int:
         test_short_code_header_candidate_is_marked_ambiguous,
         test_invalid_xlsx_reports_not_well_understood,
         test_compact_policy_preserves_semantic_columns_at_tail,
+        test_full_scan_reports_exact_column_stats,
+        test_extract_writes_bounded_matching_rows,
+        test_extract_with_unknown_column_is_skipped,
+        test_epu_fixture_detected_as_wide_measure_columns,
     ]
     failed = 0
     for test in tests:
