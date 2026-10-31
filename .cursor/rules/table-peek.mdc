@@ -1,0 +1,7 @@
+---
+description: Load table-peek when the task matches the skill description.
+globs: ["**/*.md", "**/*"]
+alwaysApply: false
+---
+
+Use the repository root `SKILL.md` as the authoritative instruction file. The packaged skill copy is `skills/data-science/table-peek/SKILL.md`.

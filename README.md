@@ -1,625 +1,190 @@
-# Tabular File Understanding Agent Skill
+# table-peek
 
 [简体中文](README.zh-CN.md) | English
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
-![Agent Skills](https://img.shields.io/badge/Agent%20Skills-compatible-purple)
-![Large CSV](https://img.shields.io/badge/Large%20CSV-ready-green)
-![LLM Context](https://img.shields.io/badge/No%20raw%20table%20in%20LLM%20context-orange)
-![IMF BOP/PIP](https://img.shields.io/badge/IMF%20BOP%2FPIP-tested-brightgreen)
-![Stdlib](https://img.shields.io/badge/Core-Python%20stdlib-lightgrey)
+table-peek lets an agent look at a huge table before it tries to analyze one.
 
-> [!NOTE]
-> **GB-scale stress-tested (sampled mode):** the profiler has already passed real IMF BOP/PIP stress tests, including a 2GB IMF BOP file and a 17GB IMF PIP file, producing compact artifacts that let LLM agents understand the table structure without loading raw rows into context. Use `--full-scan` when exact statistics are required, but budget hours for multi-GB files.
+A Python script reads the file and writes a few small artifacts. They tell the model what the table is, what one row means, where the data sits, and which parts stay uncertain. When the agent needs actual values, it pulls a bounded slice instead of loading the file.
 
-**Understand large and messy tabular files before asking an LLM to analyze them.**
+The repository keeps its old name, `tabular-file-understanding-agent-skill`. The skill is `table-peek`.
 
-A portable, Python-only agent skill that helps LLM agents understand large, messy, or structurally complex CSV, TSV, Excel, and PDF table files **without loading the full table into the context window**.
+## Why this exists
 
-Author: [yanyintingyou](https://github.com/yanyintingyou)  
-License: MIT
+Hand a multi-GB CSV to a model and one of three things happens. The file blows the context window. It gets truncated. Or the model reads a few hundred raw rows and misses the structure.
 
----
+The hard part is the first step: how is this file organized?
 
+Three cases that break naive readers:
 
-## Cross-agent compatibility and installation
+- An IMF BOP/PIP export puts a handful of descriptor columns next to hundreds of period columns, `1948` through `2025-Q4`, and stores observations inside them. `PUBLICATION_DATE` looks like a time column and is not.
+- A World Bank workbook opens with a title, a note, and a merged cell block. The real header sits on row 5.
+- An EPU country workbook uses `Year` and `Month` as keys and spreads 30+ countries across value columns.
 
-This repository now uses a dual-layout skill structure:
+Read those directly and `SCALE.ID` becomes a measure while the publication date becomes the observation period. table-peek makes those calls first and lists what needs your confirmation.
 
-```text
-repo/
-├── SKILL.md                                      # canonical cross-agent instructions
-├── AGENTS.md                                    # Codex/OpenAI project instructions
-├── CLAUDE.md                                    # Claude Code project instructions
-├── agents/openai.yaml                           # optional OpenAI agent metadata
-└── skills/data-science/tabular-file-understanding/SKILL.md  # Hermes/OpenClaw packaged skill copy
+## What you get
+
+Six files per run:
+
+| File | Contents |
+|---|---|
+| `table_manifest.json` | File inventory, candidate tables or sheets, capability level, warnings |
+| `table_profile.json` | Per column: type, examples, missing rate, statistics |
+| `table_digest.md` | Structural summary for the model, answers "what does one row mean" |
+| `ambiguities.md` | Open questions that need a human decision |
+| `data_locator_spec.json` | Machine readable locator: entity, indicator, time coverage, observation key, value column |
+| `data_locator_guide.md` | The same locator written out, with instructions for pulling values by country or indicator code |
+
+Add `--extract-limit` and you also get `sample_extract.csv` with up to N real rows.
+
+Most agents read `table_digest.md` and `ambiguities.md` and stop there. The locator matters when it is time to fetch values.
+
+## Quick start
+
+```bash
+git clone https://github.com/yanyintingyou/tabular-file-understanding-agent-skill.git
+cd tabular-file-understanding-agent-skill
+
+python skills/data-science/table-peek/scripts/profile_tabular_file.py \
+  -i your_file.csv \
+  -o ./peek
 ```
 
-The root `SKILL.md` and the packaged `skills/data-science/tabular-file-understanding/SKILL.md` are intentionally byte-identical. Supporting files, when present, are available next to both copies.
-
-### Install as a reusable skill
-
-- **Claude Code**: copy `skills/data-science/tabular-file-understanding/` to `~/.claude/skills/data-science/tabular-file-understanding/`.
-- **OpenAI Codex / OpenAI agents**: keep `AGENTS.md` when working in this repository, or copy `skills/data-science/tabular-file-understanding/` to `~/.agents/skills/data-science/tabular-file-understanding/` for a reusable skill.
-- **OpenClaw**: copy `skills/data-science/tabular-file-understanding/` to either `<workspace>/skills/data-science/tabular-file-understanding/`, `<workspace>/.agents/skills/data-science/tabular-file-understanding/`, or `~/.openclaw/skills/data-science/tabular-file-understanding/`.
-- **Hermes Agent**: copy `skills/data-science/tabular-file-understanding/` to `~/.hermes/skills/data-science/tabular-file-understanding/`, then start a new Hermes session.
-- **Generic AgentSkills loaders**: use the directory that contains `SKILL.md`; the skill name is `tabular-file-understanding`.
-
-## What is this?
-
-`tabular-file-understanding` is an Agent Skills-compatible toolkit for the first and most fragile step in data work: understanding what a tabular file actually contains.
-
-Instead of asking an LLM to read a huge spreadsheet directly, the skill instructs the agent to run a bounded Python profiler and produce compact, auditable artifacts:
-
-- file-level metadata;
-- detected tables, sheets, and candidate data regions;
-- column names and normalized names;
-- inferred column types;
-- representative examples;
-- sample-based missingness and lightweight statistics;
-- structural warnings and ambiguity notes;
-- domain-aware data locator metadata for macro/SDMX-like datasets.
-
-The result is a small set of JSON and Markdown files that an LLM can reason over safely.
-
----
-
-## Why this matters
-
-Large tables are not good LLM context.
-
-A multi-megabyte or multi-gigabyte CSV/Excel file can exceed context limits, flood the conversation with raw rows, and make the model miss the actual structure. This skill solves the first step:
-
-> It gives the agent a reliable structural understanding layer before analysis, cleaning, visualization, modeling, querying, or reporting.
-
-This skill intentionally **does not** perform final data analysis. It profiles structure, records uncertainty, and tells downstream agents where the data lives.
-
----
-
-## Quick demo with synthetic examples
-
-This repository includes small synthetic files under `examples/` so users can test the skill without downloading real large datasets:
+Read these three first:
 
 ```text
-examples/simple_fred.csv
-examples/wide_time_imf_mock.csv
-examples/wide_measure_epu_mock.xlsx
-examples/report_style_worldbank_mock.xlsx
+./peek/table_digest.md
+./peek/ambiguities.md
+./peek/data_locator_guide.md
 ```
 
-Run the regression demo suite:
+Sampling is the default. The script reads 1 MB to guess encoding and delimiter, scans at most 100k rows, and builds column profiles from the first 1,000 rows. A 20 GB file takes about as long as a 20 MB one: seconds.
+
+### Exact numbers: `--full-scan`
+
+```bash
+python skills/data-science/table-peek/scripts/profile_tabular_file.py \
+  -i your_file.csv -o ./peek --full-scan
+```
+
+This streams the whole file once and attaches `exact_stats` to every column: exact missing counts and rates, numeric min/max/mean, bounded distinct values, and a type inferred from every row. Memory stays flat. You pay one full read.
+
+On a 31 MB CSV with 1,000,000 rows and 7 columns, a full scan plus an extract took about 34 seconds at 5.2 MB peak Python memory. Scale that to a few GB and you are budgeting hours, which is why sampling stays the default.
+
+### Real rows: `--extract-limit`
+
+```bash
+python skills/data-science/table-peek/scripts/profile_tabular_file.py \
+  -i your_file.csv -o ./peek \
+  --extract-limit 20 \
+  --extract-where COUNTRY.ID=US
+```
+
+Repeat `--extract-where` to AND conditions. Matching is exact after trimming. The script stops once it has enough rows and writes them to `sample_extract.csv`. This path supports CSV and TSV only.
+
+### Sensitive files
+
+```bash
+# Mask emails, phone numbers, long digit strings
+... --redact-samples
+
+# Write no row or column values at all; extraction is disabled too
+... --no-samples
+```
+
+`--no-samples` clears `samples`, `examples`, `top_values_sample`, and the sample-derived parts of the locator. Field names, types, and structural warnings stay, because you need those to understand the schema.
+
+## What it recognizes
+
+| Table shape | What the profiler reports |
+|---|---|
+| Simple time series | Time column, value column, row count, date range (FRED single-series CSV) |
+| Long or panel table | Entity, time, categorical and numeric columns, likely row grain |
+| SDMX / macro long table | Nine roles: entity, indicator, counterpart, frequency, time, value, unit/scale/status |
+| IMF BOP/PIP wide time | Descriptor columns plus period columns, `value_layout: wide_time_columns`, reshape advice |
+| Wide measure matrix | `Year` / `Month` / `Date` as keys, remaining columns as parallel measures |
+| Report style Excel | Searches for the real header and data start, marks merged cells and note blocks |
+| Lookup or classification | Code to label mapping, not forced into a time series |
+| Matrix or cross tab | Flags both axes as carrying dimensions and asks for confirmation |
+| PDF | File metadata only, never claims extracted tables |
+
+When a table fits no known shape, the output says so and lists the specific questions in `ambiguities.md`. Treat the profiler labels as hypotheses, not verdicts.
+
+## Install for your agent
+
+The repo keeps two copies of the skill. Root `SKILL.md` and `skills/data-science/table-peek/SKILL.md` are identical, so edit both.
+
+- **Claude Code**: copy `skills/data-science/table-peek/` to `~/.claude/skills/data-science/table-peek/`
+- **OpenAI Codex**: read `AGENTS.md` inside the repo, or copy the skill to `~/.agents/skills/data-science/table-peek/`
+- **OpenClaw**: copy to `<workspace>/skills/data-science/table-peek/` or the same path under `~/.openclaw/skills/`
+- **Hermes Agent**: copy to `~/.hermes/skills/data-science/table-peek/`, then start a new session
+- **Grok Build**: copy to `~/.grok/skills/table-peek/`
+- **Generic AgentSkills loaders**: point at the directory holding `SKILL.md`; the name is `table-peek`
+
+## Locator for macro data
+
+For country by indicator by time panels from the IMF or SDMX, add `--domain-preset`:
+
+```bash
+... --domain-preset imf-bop
+```
+
+Values: `auto` (default), `generic`, `macro-timeseries`, `sdmx`, `imf-bop`.
+
+Pass local codelists and the locator fills in labels. Without them it reports bare codes and says an external codelist is required:
+
+```bash
+... --domain-preset sdmx --indicator-mapping indicators.csv --entity-mapping areas.csv
+```
+
+Mapping files use columns like `code,label,description`.
+
+To find out which indicators a multi-GB file actually contains, add `--domain-full-scan`. It writes `domain_indicator_catalog.json`, `.csv`, and `.md` with indicator coverage, time ranges, units, and a prefix-based classification of cross-border capital flow series.
+
+## Keeping output small
+
+`--output-policy auto` picks a level from file size and column count. It only shrinks the generated JSON. Your input file is never touched.
+
+| Input | Policy | Effect |
+|---|---|---|
+| Under 10 MB, normal width | `full` | Every profiling detail kept |
+| Medium file or 200+ columns | `balanced` | Fewer examples and top values |
+| Over 100 MB or 1,000 columns | `compact` | Row samples dropped, role columns kept |
+| Over 1 GB or 5,000 columns | `very-compact` | Detailed profiles capped near 300 columns |
+
+Every threshold takes a flag, and `--output-policy full|balanced|compact|very-compact` overrides the automatic choice.
+
+For a RAG or SQL pipeline downstream, add `--schema-preset generic|rag|sql`. That writes `downstream_schema_hint.json` as a starting point for field mapping.
+
+## File types
+
+| Format | Support | Notes |
+|---|---|---|
+| CSV / TSV / delimited text | Strong | Streaming, standard library; supports `--full-scan` and extraction |
+| `.xlsx` / `.xlsm` | Practical | Unzips and reads the XML, detects sheets, used ranges, merged cells, candidate headers; no formulas, macros, or legacy `.xls` |
+| PDF | Metadata | Conservative file level checks; no table extraction, no OCR |
+
+The core script imports only `csv`, `zipfile`, `xml.etree`, `json`, and `re`, so Python 3.9+ runs it as is. The five packages in `requirements.txt` are optional extras for deeper analysis. The script never imports them; `--check-deps` only reports whether they exist.
+
+## Known limits
+
+- Default statistics come from a sample. Exact numbers need `--full-scan`, which takes hours on multi-GB files.
+- `sample_extract.csv` holds the first N matches in file order. It is not a random sample and not a query engine. For filtered analysis across many keys, reshape the data and hand it to DuckDB or pandas.
+- Excel extraction is not supported. `--extract-limit` applies to CSV and TSV.
+- Dates in `.xlsx` can show up as Excel serial numbers because the script does not implement the style engine.
+- Multi row headers, stacked sub-tables in one sheet, scanned PDFs, and formula driven workbooks still need a custom parser.
+- The skill produces structural understanding. It does not analyze, clean, or modify your data.
+
+## Development
 
 ```bash
 python tests/test_profile_examples.py
 ```
 
-These examples intentionally mirror the shapes that often break naive LLM table-reading workflows: simple FRED time series, IMF BOP/PIP wide time columns, EPU wide measure columns, and World Bank-style report worksheets.
+Thirteen regression tests, standard library only. They cover FRED time series, IMF wide time columns, EPU wide measures, World Bank report headers, exact statistics, bounded extraction, privacy flags, and wide table truncation. GitHub Actions runs the same suite on Python 3.9 through 3.12.
 
-### Example output snapshot
-
-Profiling `examples/wide_time_imf_mock.csv` with `--domain-preset imf-bop` produces a locator like:
-
-```text
-value_layout: wide_time_columns
-column_roles.scale_column: SCALE.ID
-column_roles.value_column: null
-wide_time_value_columns: 1997, 1998, 1999, 2024-Q1, 2024-Q2, ...
-required_preprocessing: reshape_wide_time_columns_to_long
-recommended_key: COUNTRY.ID × INDICATOR.ID × COUNTERPART_COUNTRY.ID × FREQUENCY.ID × <time_period_column>
-```
-
-The full generated artifacts are intentionally not committed for every test run because they include timestamps and local paths. Run `python tests/test_profile_examples.py` or the quick-start command below to regenerate them locally.
-
----
-
-## What it can understand by default
-
-The bundled profiler is intentionally conservative, but it already handles a wide range of practical table shapes.
-
-| Table shape | Default understanding | Typical examples |
-|---|---|---|
-| Simple long time series | Detects time column, value column, row count, date range, and observation key | FRED single-series CSV: `observation_date, IRLTLT01JPM156N` |
-| Generic long/panel tables | Detects entity/id columns, date/time columns, categorical columns, measure columns, and likely row grain | `country × date × flow`, survey exports, transaction logs |
-| Macro / SDMX-style long data | Infers entity, indicator, counterpart, frequency, time, value, unit/scale/status roles | SDMX CSV, IMF-style country-indicator-time exports |
-| IMF BOP/PIP wide-time CSV | Detects descriptor columns plus hundreds of period columns such as `1948`, `1997-S1`, `2025-Q4`; recommends reshaping | Very large IMF BOP/PIP web CSV exports, including multi-GB files |
-| Wide measure-column tables | Keeps `Year`/`Month` or `Date` as keys and treats country/index/series columns as parallel value columns | EPU `All_Country_Data.xlsx`: `Year, Month, GEPU_current, GEPU_ppp, Australia, Brazil, ...` |
-| Report-style Excel workbooks | Searches for real header/data-start rows instead of assuming row 1; flags notes, merged cells, and title blocks | World Bank historical classification workbooks such as `OGHIST_*.xlsx` |
-| Lookup / classification tables | Recognizes code-label/category mapping tables rather than forcing them into numeric time-series form | World Bank `CLASS_*.xlsx`, country-code dictionaries, group membership tables |
-| Matrix / cross-tab tables | Flags when both rows and columns carry dimensions and asks for confirmation before analysis | Pivot tables, cross-tab summaries, dense numeric matrices |
-| PDF table files | Metadata-first by default; avoids false claims when table extraction is unsupported | PDF reports requiring optional extraction/OCR workflows |
-
-For unknown or hybrid layouts, the skill tells the agent to treat profiler labels as hypotheses, inspect bounded samples, explain uncertainty, and improve heuristics when the pattern is reusable.
-
----
-
-## Proven stress-test examples
-
-This repository is designed to look good on small CSVs, but its real target is the ugly spreadsheet/data-export world that breaks naive LLM workflows.
-
-### IMF BOP / PIP: huge, wide, and domain-heavy
-
-Large IMF Data Portal CSV exports can be **multi-GB** and may contain descriptor columns plus many wide period columns:
-
-```text
-COUNTRY.ID | INDICATOR.ID | COUNTERPART_COUNTRY.ID | FREQUENCY.ID | SCALE.ID | 1948 | 1948-Q1 | ... | 2025-Q4
-```
-
-The profiler detects:
-
-```text
-value_layout: wide_time_columns
-recommended_key: COUNTRY.ID × INDICATOR.ID × COUNTERPART_COUNTRY.ID × FREQUENCY.ID × <time_period_column>
-required_preprocessing: reshape_wide_time_columns_to_long
-```
-
-It also avoids common mistakes such as treating `PUBLICATION_DATE` as observation time or `SCALE.ID` as the value column.
-
-### World Bank historical classification workbooks
-
-World Bank workbooks often contain title rows, notes, thresholds, legends, merged cells, and real tables that start in the middle of a sheet. The skill searches for actual header rows and data-start rows, so sheets like:
-
-```text
-Code | Economy | FY89 | FY90 | FY91 | ...
-```
-
-can be understood as wide historical classification tables rather than as broken row-1 spreadsheets.
-
-### EPU all-country workbook
-
-The EPU workbook shape:
-
-```text
-Year | Month | GEPU_current | GEPU_ppp | Australia | Brazil | Canada | China | US | ...
-```
-
-is classified as:
-
-```text
-value_layout: wide_measure_columns
-recommended_key: Year × Month
-value_columns: GEPU_current, GEPU_ppp, Australia, Brazil, Canada, ...
-```
-
-If a tidy panel is needed, the recommended reshape is:
-
-```text
-Year × Month × series_or_country → value
-```
-
----
-
-## Supported file types
-
-| Format | Support level | Notes |
-|---|---:|---|
-| CSV / TSV / delimited text | Strong | Streaming, sample-bounded profiling using Python standard library; supports optional full scan |
-| Excel `.xlsx` / `.xlsm` | Best-effort but practical | Reads workbook XML; detects sheets, used ranges, merged cells, header candidates, report-style layouts; does not execute formulas or macros |
-| PDF | Metadata-first | Conservative file-level profiling unless enhanced by optional Python libraries |
-| Other files | Limited | Reports unsupported/unknown format clearly |
-
-The bundled reference profiler uses **only the Python standard library**. Optional libraries may be used by an agent for deeper inspection, but the core workflow does not require them.
-
-### Excel and PDF limits
-
-The standard-library Excel reader is intentionally conservative:
-
-- `.xlsx` / `.xlsm` only; old binary `.xls` is not supported by the core script.
-- Formula and macro contents are never executed.
-- Excel style-based dates may appear as raw serial numbers because the core script does not implement the full Excel style engine.
-- Merged cells, hidden sheets, data validation, charts, and conditional formatting are treated as structural hints at most, not reconstructed as Excel would display them.
-- Complex multi-header workbooks may still need manual confirmation or an optional parser such as `openpyxl` in a downstream workflow.
-
-PDF support is metadata-first. The core script counts coarse file/page signals and must not be treated as authoritative PDF table extraction or OCR.
-
----
-
-## What it produces
-
-Running the profiler creates these core artifacts:
-
-```text
-<output_dir>/
-├── table_manifest.json
-├── table_profile.json
-├── table_digest.md
-├── ambiguities.md
-├── data_locator_spec.json
-├── data_locator_guide.md
-└── sample_extract.csv          # optional, only with --extract-limit
-```
-
-Optional outputs include:
-
-```text
-downstream_schema_hint.json
-domain_indicator_catalog.json
-domain_indicator_catalog.csv
-domain_indicator_catalog.md
-```
-
-### Artifact roles
-
-- `table_manifest.json` — file inventory, detected table candidates, capability level, output policy, warnings.
-- `table_profile.json` — bounded column profiles, inferred types, samples, missingness, lightweight statistics.
-- `table_digest.md` — compact LLM-readable structural summary.
-- `ambiguities.md` — issues that need confirmation before serious analysis.
-- `data_locator_spec.json` — machine-readable locator for entities, indicators, time coverage, observation keys, values, units, statuses, and preprocessing needs.
-- `data_locator_guide.md` — compact human/LLM-readable guide for downstream automated extraction.
-- `sample_extract.csv` — optional bounded row extract (header plus up to `--extract-limit` matches); the row count and filters are recorded in `tables[].sample_extract` in the manifest.
-
-### Exact statistics and bounded reads (v1.2.0)
-
-`--full-scan` no longer just counts rows. It streams the file once and adds `columns[].exact_stats`: exact missing counts and rates, numeric min/max/mean, bounded distinct values, and a type inferred from every row. Memory stays flat; the cost is one full I/O pass.
-
-Measured locally (Windows, Python 3.13, single core): a 1,000,000-row × 7-column, 31 MB CSV took ~34 s with `--full-scan` plus an extract, at 5.2 MB peak Python memory; the sampled mode took 0.5 s at the same footprint. That is roughly 30k rows/second, so a multi-GB full scan is an hours-scale job — which is why sampling remains the default.
-
----
-
-## Quick start
-
-Check optional dependency status:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py --check-deps
-```
-
-Profile a file:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input your_file.csv \
-  --out ./tabular-profile
-```
-
-Then read:
-
-```text
-./tabular-profile/table_digest.md
-./tabular-profile/ambiguities.md
-./tabular-profile/data_locator_guide.md
-```
-
-For a deeper but slower CSV scan (exact row count + exact column statistics):
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input your_file.csv \
-  --out ./tabular-profile \
-  --full-scan
-```
-
-When the agent needs real values rather than statistics, take a bounded extract instead of dumping the table:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input your_file.csv \
-  --out ./tabular-profile \
-  --extract-limit 50 \
-  --extract-where COUNTRY.ID=US
-```
-
-`--extract-where` is repeatable, combined with AND, and matched exactly after trimming. Matches are written to `sample_extract.csv`, capped by `--extract-limit` and truncated per cell by `--max-cell-chars`.
-
----
-
-## Domain-aware data locator for macro / SDMX files
-
-For IMF BOP-style exports, SDMX CSV files, and macroeconomic country-indicator-time panels, the profiler can infer a data locator layer:
-
-- entity/object column, such as country or economy;
-- indicator/series column;
-- counterpart/partner column when present;
-- frequency and time columns;
-- observation value column or value-bearing wide columns;
-- unit/scaling/status attributes;
-- recommended observation key for downstream extraction.
-
-Example for an IMF BOP-like file:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input bop.csv \
-  --out ./tabular-profile \
-  --domain-preset imf-bop
-```
-
-Available domain presets:
-
-- `auto` default;
-- `generic`;
-- `macro-timeseries`;
-- `sdmx`;
-- `imf-bop`.
-
-If you have codelists, pass them as CSV files:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input bop.csv \
-  --out ./tabular-profile \
-  --domain-preset sdmx \
-  --indicator-mapping indicators.csv \
-  --entity-mapping areas.csv
-```
-
-Mapping files should use columns like `code,label,description`. Without mappings, the profiler reports codes and marks that external codelists are required.
-
-### Full indicator catalog for IMF BOP/PIP
-
-For variable discovery in very large IMF BOP/PIP files, add `--domain-full-scan`:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input bop.csv \
-  --out ./bop-profile \
-  --domain-preset imf-bop \
-  --domain-full-scan
-```
-
-This creates `domain_indicator_catalog.json`, `.csv`, and `.md`, including indicator coverage, period range, units/scales, accounting-entry samples, and transparent rule-based capital-flow classification.
-
----
-
-## Adaptive output control
-
-By default, the profiler uses:
-
-```bash
---output-policy auto
-```
-
-This keeps output artifacts small without changing the original input file.
-
-| Input scale | Auto policy | What happens |
-|---|---:|---|
-| Small files / normal-width tables | `full` | Keeps full profiling detail in JSON artifacts |
-| Medium files or moderately wide tables | `balanced` | Keeps samples, but reduces examples/top values |
-| Large files or wide tables | `compact` | Omits row samples and limits some per-column detail |
-| Very large files or extremely wide tables | `very-compact` | Strongly limits examples and detailed column profiles |
-
-Default thresholds:
-
-- small-file threshold: 10 MB;
-- large-file threshold: 100 MB;
-- huge-file threshold: 1 GB;
-- medium-width threshold: 200 columns;
-- large-width threshold: 1,000 columns;
-- huge-width threshold: 5,000 columns.
-
-Manual override:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input your_file.csv \
-  --out ./tabular-profile \
-  --output-policy compact
-```
-
----
-
-## Privacy options
-
-For sensitive files, use lightweight sample redaction:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input sensitive.csv \
-  --out ./tabular-profile \
-  --redact-samples
-```
-
-For stricter schema-only profiling without row or column value samples:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input sensitive.csv \
-  --out ./tabular-profile \
-  --no-samples
-```
-
-`--no-samples` removes `samples.head_rows`, `samples.representative_rows`, `columns[].examples`, and `columns[].top_values_sample` from `table_profile.json`. It also suppresses sample-derived locator indexes, frequency samples, key checks, and per-period value summaries in `data_locator_spec.json` / `data_locator_guide.md`. Column names, inferred types, structural warnings, and locator column-role metadata remain because they are needed for schema understanding.
-
-You can also limit retained cell length:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input sensitive.csv \
-  --out ./tabular-profile \
-  --redact-samples \
-  --max-cell-chars 80
-```
-
----
-
-## Optional downstream hints
-
-This skill stops at structural understanding, but it can write a small optional hint file for downstream workflows:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input your_file.csv \
-  --out ./tabular-profile \
-  --schema-preset generic
-```
-
-Available presets:
-
-- `generic`
-- `rag`
-- `sql`
-- `none` default
-
----
-
-## Repository layout
-
-```text
-.
-├── AGENTS.md
-├── CLAUDE.md
-├── LICENSE
-├── README.md
-├── README.zh-CN.md
-├── .gitignore
-├── .cursor/
-│   └── rules/
-│       └── tabular-file-understanding.mdc
-├── examples/
-│   ├── README.md
-│   ├── report_style_worldbank_mock.xlsx
-│   ├── simple_fred.csv
-│   ├── wide_measure_epu_mock.xlsx
-│   └── wide_time_imf_mock.csv
-├── tests/
-│   ├── README.md
-│   └── test_profile_examples.py
-└── skills/
-    └── tabular-file-understanding/
-        ├── SKILL.md
-        ├── scripts/
-        │   └── profile_tabular_file.py
-        └── references/
-            ├── adaptive-output-policy.md
-            ├── compatibility-notes.md
-            ├── dependency-policy.md
-            ├── domain-aware-data-locator.md
-            ├── downstream-schema-hints.md
-            ├── output-schema.md
-            ├── privacy-and-security.md
-            ├── table-structure-patterns.md
-            └── validation-checklist.md
-```
-
----
-
-## Agent compatibility
-
-This repository is designed to work across multiple agent ecosystems:
-
-- Agent Skills / Hermes / OpenClaw: use `skills/data-science/tabular-file-understanding/SKILL.md`.
-- OpenAI Codex-compatible agents: use `AGENTS.md`.
-- Claude Code-compatible agents: use `CLAUDE.md`.
-- Cursor: use `IDE rule adapter directory/tabular-file-understanding.mdc`.
-
----
-
-## Installation examples
-
-Clone the repository:
-
-```bash
-git clone https://github.com/yanyintingyou/tabular-file-understanding-agent-skill.git
-cd tabular-file-understanding-agent-skill
-```
-
-Use directly:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input your_file.csv \
-  --out ./tabular-profile
-```
-
-### Install as a Hermes skill
-
-This repository is a skill collection: the actual skill directory is:
-
-```text
-skills/data-science/tabular-file-understanding/
-```
-
-For a local Hermes setup, copy or symlink that directory into your Hermes skills directory, for example:
-
-```bash
-mkdir -p ~/.hermes/skills/data-science
-ln -sfn "$PWD/skills/tabular-file-understanding" \
-  ~/.hermes/skills/data-science/tabular-file-understanding
-```
-
-If your Hermes version supports skill taps/install commands, install the repository as a tap and select `tabular-file-understanding`; otherwise the symlink/copy method above is the most transparent option.
-
-For other Agent Skills-compatible systems, copy or reference:
-
-```text
-skills/data-science/tabular-file-understanding/
-```
-
----
-
-## Design principles
-
-1. **Do not load raw large tables into LLM context.**
-2. **Use Python only.**
-3. **Use the standard library by default.**
-4. **Control generated JSON size adaptively for large or wide files.**
-5. **For macro/SDMX-like data, generate a locator rather than loading raw observations into context.**
-6. **Never auto-install dependencies without user approval.**
-7. **Never overwrite the original file.**
-8. **Separate structural facts from semantic guesses.**
-9. **Treat profiler labels as hypotheses, not an oracle.**
-10. **Prefer compact artifacts over verbose chat output.**
-
----
-
-## Known limitations
-
-- The bundled script is conservative and standard-library only.
-- CSV profiling is sample-bounded by default; `--full-scan` adds exact row counts and exact per-column statistics at the cost of one full read (~30k rows/second).
-- `sample_extract.csv` returns the first N matches in file order — not a random sample and not a query engine. For filtered analysis across many keys, reshape the data and hand it to DuckDB/pandas.
-- Bounded extraction (`--extract-limit`) applies to CSV/TSV only; Excel extraction is not supported.
-- For large or very wide files, JSON artifacts may be intentionally reduced by the adaptive output policy.
-- Excel support reads `.xlsx` XML and does not execute formulas, macros, external links, or the Excel calculation engine.
-- PDF support is metadata-first unless enhanced by optional Python libraries.
-- Redaction is lightweight and pattern-based; it is not a full DLP system.
-- The data locator is heuristic. Official DSD/codelists remain authoritative for SDMX/IMF datasets.
-- Complex multi-row headers, stacked subtables, formulas, nested data packages, scanned PDFs, and domain-specific conventions may still require custom extractors.
-- The skill creates structural understanding, not final analysis.
-
----
-
-## Validation
-
-Run a basic smoke test:
-
-```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py --check-deps
-```
-
-Create a small CSV and profile it:
-
-```bash
-printf 'country,date,flow\nUS,2024-01-01,1.2\nCN,2024-01-02,3.4\n' > /tmp/tfu-smoke.csv
-
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
-  --input /tmp/tfu-smoke.csv \
-  --out /tmp/tfu-smoke-profile
-```
-
-Expected files:
-
-```text
-/tmp/tfu-smoke-profile/table_manifest.json
-/tmp/tfu-smoke-profile/table_profile.json
-/tmp/tfu-smoke-profile/table_digest.md
-/tmp/tfu-smoke-profile/ambiguities.md
-/tmp/tfu-smoke-profile/data_locator_spec.json
-/tmp/tfu-smoke-profile/data_locator_guide.md
-```
-
-For the full checklist, see:
-
-```text
-skills/data-science/tabular-file-understanding/references/validation-checklist.md
-```
-
----
+When you change CLI behavior, privacy handling, or the output schema, update both `SKILL.md` copies, the matching file under `references/`, and `CHANGELOG.md`.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
-
----
-
-## Author
-
-Created by [yanyintingyou](https://github.com/yanyintingyou).
+MIT. Built by [yanyintingyou](https://github.com/yanyintingyou).

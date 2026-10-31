@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## 1.3.0 — 2026-10-31
+
+### Changed
+
+- Renamed the skill from `tabular-file-understanding` to `table-peek`. The packaged copy now lives at `skills/data-science/table-peek/`, and the `name:` field, Cursor rule, CI paths, AGENTS/CLAUDE instructions, and OpenAI metadata all follow it. Installs created before 1.3.0 still work, but they sit under the old directory name; replace them when convenient.
+- Rewrote `README.md` and `README.zh-CN.md`: what the tool does for an agent, how to run the three common modes, and what it will not do. Repeated full command paths collapsed into one clone-and-run block.
+
 ## 1.2.0 — 2026-10-31
 
 ### Added
@@ -46,7 +53,7 @@ All notable changes to this project are documented here.
 ## 1.1.0 — Initial public release
 
 - Python-standard-library profiler for CSV/TSV, `.xlsx`/`.xlsm`, and metadata-first PDF profiling.
-- Agent Skills-compatible layout under `skills/data-science/tabular-file-understanding/`.
+- Agent Skills-compatible layout under `skills/data-science/table-peek/`.
 - Domain-aware locator for macro/SDMX/IMF BOP-like files.
 - Adaptive output policies for large and wide files.
 - Synthetic examples and regression tests for FRED, IMF wide-time, EPU wide-measure, and World Bank report-style layouts.

@@ -1,17 +1,17 @@
-# Claude Code Instructions — Tabular File Understanding Agent Skill
+# Claude Code Instructions — table-peek
 
 Use the root `SKILL.md` as the canonical instructions for this repository.
 
 For Claude Code skill installation, copy the packaged skill directory:
 
 ```text
-skills/data-science/tabular-file-understanding/
+skills/data-science/table-peek/
 ```
 
 to:
 
 ```text
-~/.claude/skills/data-science/tabular-file-understanding/
+~/.claude/skills/data-science/table-peek/
 ```
 
-The directory name and the `name:` field are both `tabular-file-understanding`. Do not reference older repository layouts.
+The directory name and the `name:` field are both `table-peek`. Do not reference older repository layouts.

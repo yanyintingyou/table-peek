@@ -14,9 +14,9 @@ Original documentation:
 This package follows that structure:
 
 ```text
-skills/data-science/tabular-file-understanding/SKILL.md
-skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py
-skills/data-science/tabular-file-understanding/references/*.md
+skills/data-science/table-peek/SKILL.md
+skills/data-science/table-peek/scripts/profile_tabular_file.py
+skills/data-science/table-peek/references/*.md
 ```
 
 ## Claude Code / Claude Skills
@@ -61,7 +61,7 @@ Original documentation:
 
 - https://cursor.com/help/customization/rules
 
-This package includes `IDE rule adapter directory/tabular-file-understanding.mdc` as an agent-decided rule with relevant file globs.
+This package includes `IDE rule adapter directory/table-peek.mdc` as an agent-decided rule with relevant file globs.
 
 ## Portability Choices
 

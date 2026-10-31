@@ -1,4 +1,4 @@
-# Output Schema for Tabular File Understanding
+# Output Schema for table-peek
 
 This file defines the canonical artifacts produced by the skill. Agents may add fields, but should not remove the core fields because downstream agents rely on them.
 

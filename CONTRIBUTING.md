@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for improving `tabular-file-understanding`.
+Thank you for improving `table-peek`.
 
 ## Development principles
 
@@ -16,7 +16,7 @@ Run these before opening a pull request:
 
 ```bash
 python -m py_compile \
-  skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
+  skills/data-science/table-peek/scripts/profile_tabular_file.py \
   tests/test_profile_examples.py
 
 python tests/test_profile_examples.py
@@ -34,6 +34,6 @@ If a change affects CLI behavior, privacy behavior, output schema, or supported 
 
 - `README.md`
 - `README.zh-CN.md`
-- `skills/data-science/tabular-file-understanding/SKILL.md`
-- relevant files under `skills/data-science/tabular-file-understanding/references/`
+- `skills/data-science/table-peek/SKILL.md`
+- relevant files under `skills/data-science/table-peek/references/`
 - `CHANGELOG.md`

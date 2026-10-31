@@ -1,15 +1,15 @@
 ---
-name: tabular-file-understanding
-description: Extracts structure, schemas, samples, exact column statistics, and warnings from large CSV, Excel, and PDF table files using Python-only profiling, and can write a bounded row extract for agent inspection. Use before asking an LLM to reason about tabular files.
+name: table-peek
+description: Profiles very large CSV, Excel, and PDF tables before an LLM reads them, producing a compact structural digest, exact column statistics, and an optional bounded row extract. Use before asking an LLM to reason about a tabular file.
 when-to-use: large csv, huge spreadsheet, table structure, schema discovery, what is in this file, sample rows from big table, imf bop csv, xlsx profiling
-version: 1.2.0
+version: 1.3.0
 author: yanyintingyou
 license: MIT
 platforms: [linux, macos, windows]
-metadata: {"hermes":{"category":"data-science","tags":["csv","xlsx","pdf","spreadsheet","table","profiling","llm-context"],"related_skills":["tabular-file-understanding"]},"openclaw":{"homepage":"https://github.com/yanyintingyou/tabular-file-understanding-agent-skill"},"compatibility":{"agents":["Hermes Agent","Claude Code","OpenAI Codex","OpenClaw","generic AgentSkills loaders"]}}
+metadata: {"hermes":{"category":"data-science","tags":["csv","xlsx","pdf","spreadsheet","table","profiling","llm-context"],"related_skills":["table-peek"]},"openclaw":{"homepage":"https://github.com/yanyintingyou/tabular-file-understanding-agent-skill"},"compatibility":{"agents":["Hermes Agent","Claude Code","OpenAI Codex","OpenClaw","generic AgentSkills loaders"]}}
 ---
 
-# Tabular File Understanding
+# table-peek
 
 ## Purpose
 
@@ -35,7 +35,7 @@ When the agent genuinely needs to see real values, use the bounded extract (`--e
 Use Python only. Do not require external command-line tools such as DuckDB CLI, LibreOffice, Java, Ghostscript, `xlsx2csv`, `tabula`, shell pipelines, or database servers. If the host agent exposes a shell-like tool, use it only to run Python, for example:
 
 ```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py --input /path/to/file.csv --out /path/to/output
+python skills/data-science/table-peek/scripts/profile_tabular_file.py --input /path/to/file.csv --out /path/to/output
 ```
 
 The bundled reference script uses only the Python standard library. Agents may write additional Python code if needed, but should preserve the same output contract. For sensitive files, run with `--redact-samples` or `--no-samples`. If a downstream workflow needs a routing hint, add `--schema-preset generic`, `--schema-preset rag`, or `--schema-preset sql`. For macroeconomic or SDMX-style time-series files, use `--domain-preset auto|macro-timeseries|sdmx|imf-bop` and optional `--indicator-mapping` / `--entity-mapping` CSV codelists to generate a data locator.

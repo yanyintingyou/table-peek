@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for tabular-file-understanding examples.
+"""Regression tests for table-peek examples.
 
 These tests intentionally use only Python's standard library so they can run in
 minimal agent environments. They protect the table-shape regressions that this
@@ -21,7 +21,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "skills" / "data-science" / "tabular-file-understanding" / "scripts" / "profile_tabular_file.py"
+SCRIPT = ROOT / "skills" / "data-science" / "table-peek" / "scripts" / "profile_tabular_file.py"
 EXAMPLES = ROOT / "examples"
 
 

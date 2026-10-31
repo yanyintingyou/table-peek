@@ -21,7 +21,7 @@ Profiling artifacts may contain bounded examples and top values unless sample su
 For sensitive files, use one of these modes:
 
 ```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
+python skills/data-science/table-peek/scripts/profile_tabular_file.py \
   --input sensitive.csv \
   --out ./tabular-profile \
   --redact-samples
@@ -30,7 +30,7 @@ python skills/data-science/tabular-file-understanding/scripts/profile_tabular_fi
 or, for stricter suppression:
 
 ```bash
-python skills/data-science/tabular-file-understanding/scripts/profile_tabular_file.py \
+python skills/data-science/table-peek/scripts/profile_tabular_file.py \
   --input sensitive.csv \
   --out ./tabular-profile \
   --no-samples
